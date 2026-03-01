@@ -121,7 +121,7 @@ st.markdown("""
 @st.cache_data(ttl=300)
 def load_data():
     # from pyspark.sql import SparkSession
-    from databricks.connect import DatabricksSession
+    # from databricks.connect import DatabricksSession
     import os
     # host = os.environ.get("DATABRICKS_HOST")
     # cluster = os.environ.get("DATABRICKS_WORKSPACE_ID")
@@ -140,14 +140,16 @@ def load_data():
     # .config("spark.sql.adaptive.enabled", "true") \
     # .getOrCreate()
     # host = os.environ["DATABRICKS_HOST"]
-    cluster_id = "0222-082255-oh0wkr3i-v2n"
+    # cluster_id = "0222-082255-oh0wkr3i-v2n"
     # print(host, cluster_id)
 
     # spark = DatabricksSession.builder \
     #     .host(host) \
     #     .clusterId(cluster_id) \
     #     .getOrCreate()  # no .token() — OAuth handles auth automatically
-    spark = DatabricksSession.builder.clusterId(cluster_id).getOrCreate()
+    # spark = DatabricksSession.builder.clusterId(cluster_id).getOrCreate()
+    from pyspark.sql import SparkSession
+    spark = SparkSession.getActiveSession()
 
     features  = spark.table("humanitarian.features").toPandas()
     anomalies = spark.table("humanitarian.anomalies").toPandas()
