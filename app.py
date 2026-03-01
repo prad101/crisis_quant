@@ -120,41 +120,27 @@ st.markdown("""
 # ── DATA LOADER ───────────────────────────────────────────────────────────────
 @st.cache_data(ttl=300)
 def load_data():
-    # from pyspark.sql import SparkSession
-    # from databricks.connect import DatabricksSession
+    from databricks import sql
     import os
-    # host = os.environ.get("DATABRICKS_HOST")
-    # cluster = os.environ.get("DATABRICKS_WORKSPACE_ID")
-    # cluster = os.getenv("CLUSTER_ID")
-    # token = os.getenv("TOKEN")
-    # print("envs", host, cluster, token)
 
-    # spark = DatabricksSession.builder \
-    #     .host(host) \
-    #     .clusterId(cluster) \
-    #     .token(token) \
-    #     .getOrCreate()
+    conn = sql.connect(
+        server_hostname = os.environ["DATABRICKS_HOST"].replace("https://", ""),
+        http_path       = os.environ["DATABRICKS_HTTP_PATH"],
+        client_id       = os.environ["DATABRICKS_CLIENT_ID"],
+        client_secret   = os.environ["DATABRICKS_CLIENT_SECRET"],
+    )
 
-    # spark = SparkSession.builder \
-    # .appName("humanitarian-ingestion") \
-    # .config("spark.sql.adaptive.enabled", "true") \
-    # .getOrCreate()
-    # host = os.environ["DATABRICKS_HOST"]
-    # cluster_id = "0222-082255-oh0wkr3i-v2n"
-    # print(host, cluster_id)
+    def query(table):
+        with conn.cursor() as cursor:
+            cursor.execute(f"SELECT * FROM {table}")
+            return cursor.fetchall_arrow().to_pandas()
 
-    # spark = DatabricksSession.builder \
-    #     .host(host) \
-    #     .clusterId(cluster_id) \
-    #     .getOrCreate()  # no .token() — OAuth handles auth automatically
-    # spark = DatabricksSession.builder.clusterId(cluster_id).getOrCreate()
-    from pyspark.sql import SparkSession
-    spark = SparkSession.getActiveSession()
+    features  = query("humanitarian.features")
+    anomalies = query("humanitarian.anomalies")
+    projects  = query("humanitarian.projects")
+    contribs  = query("humanitarian.contributions")
 
-    features  = spark.table("humanitarian.features").toPandas()
-    anomalies = spark.table("humanitarian.anomalies").toPandas()
-    projects  = spark.table("humanitarian.projects").toPandas()
-    contribs  = spark.table("humanitarian.contributions").toPandas()
+    conn.close()
 
     return features, anomalies, projects, contribs
 
