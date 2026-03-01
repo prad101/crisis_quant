@@ -139,14 +139,15 @@ def load_data():
     # .appName("humanitarian-ingestion") \
     # .config("spark.sql.adaptive.enabled", "true") \
     # .getOrCreate()
-    host = os.environ["DATABRICKS_HOST"]
-    cluster_id = "0222-082255-oh0wkr3i-v2n"
-    print(host, cluster_id)
+    # host = os.environ["DATABRICKS_HOST"]
+    # cluster_id = "0222-082255-oh0wkr3i-v2n"
+    # print(host, cluster_id)
 
-    spark = DatabricksSession.builder \
-        .host(host) \
-        .clusterId(cluster_id) \
-        .getOrCreate()  # no .token() — OAuth handles auth automatically
+    # spark = DatabricksSession.builder \
+    #     .host(host) \
+    #     .clusterId(cluster_id) \
+    #     .getOrCreate()  # no .token() — OAuth handles auth automatically
+    spark = DatabricksSession.builder.getOrCreate()
 
     features  = spark.table("humanitarian.features").toPandas()
     anomalies = spark.table("humanitarian.anomalies").toPandas()
