@@ -1,8 +1,10 @@
 # Databricks notebook source
+# MAGIC %md
 # MAGIC ## Notebook 01: Data Ingestion & EDA
 # MAGIC **Purpose**: Load all raw datasets, handle HXL headers, coerce types, write to Delta tables.
 
 # COMMAND ----------
+
 from pyspark.sql import SparkSession
 import pandas as pd
 import os
@@ -16,11 +18,13 @@ spark.sql("CREATE DATABASE IF NOT EXISTS humanitarian")
 print("✓ Spark ready | Database 'humanitarian' ensured")
 
 # COMMAND ----------
+
 # ── CONFIG ────────────────────────────────────────────────────────────────────
-ROOT_DIR  = "/dbfs/FileStore/humanitarian"   # adjust to your DBFS path
+ROOT_DIR  = "/Workspace/Users/mail2pradyu@gmail.com/crisis_quant"   # adjust to your DBFS path
 DATA_DIR  = "data"
 
 # COMMAND ----------
+
 # ── HELPERS ───────────────────────────────────────────────────────────────────
 
 def safe_coerce(df: pd.DataFrame, threshold: float = 0.8) -> pd.DataFrame:
@@ -81,11 +85,12 @@ def load_csv(file_path: str) -> pd.DataFrame:
     return df
 
 # COMMAND ----------
+
 # ── 1. STANDARD CSV DATASETS ──────────────────────────────────────────────────
 
 datasets_to_load = {
     "fts_requirements": "fts_requirements_funding_globalcluster_global.csv",
-    "population":       "cod_population_admin0.csv",
+    "population": "cod_population_admin0.csv",
 }
 
 raw_datasets  = {}
@@ -107,6 +112,7 @@ for name, fname in datasets_to_load.items():
         print(f"✗ {name}: {e}")
 
 # COMMAND ----------
+
 # ── 2. HNO 2025 (HXL format) ─────────────────────────────────────────────────
 
 hno_path = f"{ROOT_DIR}/{DATA_DIR}/hpc_hno_2025.csv"
@@ -126,11 +132,12 @@ except Exception as e:
     print(f"✗ hno: {e}")
 
 # COMMAND ----------
+
 # ── 3. PROJECT LEVEL DATA (no HXL) ───────────────────────────────────────────
 
 project_files = {
-    "projects":      "Projectleveldata/ProjectSummaryWithLocationAndCluster20260222055839817.csv",
-    "contributions": "Projectleveldata/Contribution_by_Pooled_Fund_Code.csv",
+    "projects": "ProjectSummaryWithLocationAndCluster20260222055839817.csv",
+    "contributions": "Contribution_by_Pooled_Fund_Code.csv",
 }
 
 for name, fname in project_files.items():
@@ -151,15 +158,17 @@ for name, fname in project_files.items():
         print(f"✗ {name}: {e}")
 
 # COMMAND ----------
+
 # ── 4. EMDAT DISASTER DATA (Excel) ────────────────────────────────────────────
 
-emdat_path = f"{ROOT_DIR}/{DATA_DIR}/public_emdat_incl_hist_2026-02-21.xlsx"
+emdat_path = f"{ROOT_DIR}/{DATA_DIR}/public_emdat_incl_hist_2026-02-21.csv"
 try:
-    df_emdat = pd.read_excel(emdat_path, sheet_name="EM-DAT Data", dtype=str)
+    df_emdat = pd.read_csv(emdat_path, dtype=str)
     df_emdat.columns = [
-        c.strip().replace(" ", "_").replace("'", "").replace("(", "").replace(")", "").replace("/", "_")
+        c.strip().replace(" ", "_").replace("'", "").replace("(", "").replace(")", "").replace("/", "_").replace("$","").replace(".", "").replace(",", "")
         for c in df_emdat.columns
     ]
+    print(df_emdat.columns)
     df_emdat = safe_coerce(df_emdat)
     df_data_dict["emdat"] = df_emdat
     sdf_emdat = spark.createDataFrame(df_emdat)
@@ -173,6 +182,25 @@ except Exception as e:
     print(f"✗ emdat: {e}")
 
 # COMMAND ----------
+
+# MAGIC %md
+# MAGIC Index(['DisNo.', 'Historic', 'Classification_Key', 'Disaster_Group',
+# MAGIC        'Disaster_Subgroup', 'Disaster_Type', 'Disaster_Subtype',
+# MAGIC        'External_IDs', 'Event_Name', 'ISO', 'Country', 'Subregion', 'Region',
+# MAGIC        'Location', 'Origin', 'Associated_Types', 'OFDA_BHA_Response', 'Appeal',
+# MAGIC        'Declaration', 'AID_Contribution_000_US', 'Magnitude',
+# MAGIC        'Magnitude_Scale', 'Latitude', 'Longitude', 'River_Basin', 'Start_Year',
+# MAGIC        'Start_Month', 'Start_Day', 'End_Year', 'End_Month', 'End_Day',
+# MAGIC        'Total_Deaths', 'No._Injured', 'No._Affected', 'No._Homeless',
+# MAGIC        'Total_Affected', 'Reconstruction_Costs_000_US',
+# MAGIC        'Reconstruction_Costs,_Adjusted_000_US', 'Insured_Damage_000_US',
+# MAGIC        'Insured_Damage,_Adjusted_000_US', 'Total_Damage_000_US',
+# MAGIC        'Total_Damage,_Adjusted_000_US', 'CPI', 'Admin_Units',
+# MAGIC        'GADM_Admin_Units', 'Entry_Date', 'Last_Update'],
+# MAGIC       dtype='object')
+
+# COMMAND ----------
+
 # ── 5. EDA SUMMARY ────────────────────────────────────────────────────────────
 
 print("\n" + "="*70)
@@ -184,3 +212,7 @@ for name, sdf in raw_datasets.items():
     sdf.printSchema()
 
 print(f"\n✓ Notebook 01 complete — {len(raw_datasets)} tables written to humanitarian.*")
+
+# COMMAND ----------
+
+

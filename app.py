@@ -120,122 +120,38 @@ st.markdown("""
 # ── DATA LOADER ───────────────────────────────────────────────────────────────
 @st.cache_data(ttl=300)
 def load_data():
-    """
-    Try Databricks Delta tables first, fall back to CSV for local dev.
-    """
-    try:
-        from pyspark.sql import SparkSession
-        spark = SparkSession.getActiveSession()
-        if spark:
-            features   = spark.table("humanitarian.features").toPandas()
-            anomalies  = spark.table("humanitarian.anomalies").toPandas()
-            projects   = spark.table("humanitarian.projects").toPandas()
-            contribs   = spark.table("humanitarian.contributions").toPandas()
-            return features, anomalies, projects, contribs
-    except Exception:
-        pass
+    # from pyspark.sql import SparkSession
+    from databricks.connect import DatabricksSession
+    import os
+    # host = os.environ.get("DATABRICKS_HOST")
+    # cluster = os.environ.get("DATABRICKS_WORKSPACE_ID")
+    # cluster = os.getenv("CLUSTER_ID")
+    # token = os.getenv("TOKEN")
+    # print("envs", host, cluster, token)
 
-    # ── LOCAL CSV FALLBACK ────────────────────────────────────────────────────
-    # For demo purposes generate synthetic data matching our schema
-    np.random.seed(42)
-    countries = ["AFG","ETH","SYR","YEM","SDN","COD","SSD","MMR","NGA","HTI",
-                 "CAF","CMR","MLI","BFA","NER","TCD","MOZ","ZWE","SOM","PAK"]
-    clusters  = ["food security","health","wash","shelter and nfi","nutrition",
-                 "protection","education","logistics","early recovery","multipurpose cash"]
-    years     = [2022, 2023, 2024, 2025]
+    # spark = DatabricksSession.builder \
+    #     .host(host) \
+    #     .clusterId(cluster) \
+    #     .token(token) \
+    #     .getOrCreate()
 
-    rows = []
-    for country in countries:
-        for cluster in clusters:
-            for year in years:
-                req  = np.random.uniform(1e6, 5e8)
-                fund = req * np.random.beta(2, 3)
-                inneed = np.random.randint(100000, 5000000)
-                targeted = int(inneed * np.random.uniform(0.3, 0.9))
-                pop  = np.random.randint(1000000, 50000000)
-                rows.append({
-                    "country_code": country,
-                    "cluster_name": cluster,
-                    "year": year,
-                    "appeal_name": f"{country} HRP {year}",
-                    "appeal_id": np.random.randint(1000, 9999),
-                    "total_requirements_usd": req,
-                    "total_funding_usd": fund,
-                    "funding_pct": fund / req * 100,
-                    "total_inneed": inneed,
-                    "total_targeted": targeted,
-                    "total_population": pop,
-                    "num_disasters_5yr": np.random.randint(0, 10),
-                    "total_disaster_deaths_5yr": np.random.randint(0, 50000),
-                    "total_disaster_affected_5yr": np.random.randint(0, 2000000),
-                    "funding_gap_usd": req - fund,
-                    "funding_gap_pct": (req - fund) / req * 100,
-                    "funding_coverage_rate": fund / req,
-                    "beneficiary_to_funding_ratio": targeted / (fund + 1e-9),
-                    "need_to_requirements_ratio": inneed / (req + 1e-9),
-                    "targeting_coverage_rate": targeted / inneed,
-                    "cost_per_beneficiary": fund / (targeted + 1e-9),
-                    "funding_per_capita": fund / pop,
-                    "requirement_per_capita": req / pop,
-                    "disaster_severity_score": np.random.uniform(0, 10),
-                    "sector_funding_efficiency_pct": np.random.uniform(10, 90),
-                    "project_vs_sector_avg": np.random.uniform(-0.5, 0.5),
-                })
+    # spark = SparkSession.builder \
+    # .appName("humanitarian-ingestion") \
+    # .config("spark.sql.adaptive.enabled", "true") \
+    # .getOrCreate()
+    host = os.environ["DATABRICKS_HOST"]
+    cluster_id = "0222-082255-oh0wkr3i-v2n"
+    print(host, cluster_id)
 
-    features = pd.DataFrame(rows)
+    spark = DatabricksSession.builder \
+        .host(host) \
+        .clusterId(cluster_id) \
+        .getOrCreate()  # no .token() — OAuth handles auth automatically
 
-    # Anomalies: flag ~5% as anomalous
-    from sklearn.ensemble import IsolationForest
-    from sklearn.preprocessing import StandardScaler
-    ML_FEATURES = [
-        "funding_coverage_rate","funding_gap_pct","beneficiary_to_funding_ratio",
-        "need_to_requirements_ratio","targeting_coverage_rate","disaster_severity_score",
-    ]
-    Xf = features[ML_FEATURES].fillna(0)
-    sc = StandardScaler()
-    Xs = sc.fit_transform(Xf)
-    iso = IsolationForest(contamination=0.05, random_state=42)
-    preds = iso.fit_predict(Xs)
-    scores = iso.decision_function(Xs)
-    anomalies = features.copy()
-    anomalies["is_anomaly"]    = (preds == -1).astype(int)
-    anomalies["anomaly_score"] = -scores
-    from sklearn.cluster import KMeans
-    anomalies["cluster_id"]    = KMeans(n_clusters=8, random_state=42, n_init=10).fit_predict(Xs)
-
-    # Projects
-    orgs = ["UNICEF","WFP","UNHCR","WHO","IRC","Oxfam","MSF","Save the Children",
-            "NRC","CARE","ACF","DRC","IMC","Mercy Corps","CRS"]
-    prows = []
-    for _ in range(2000):
-        c = np.random.choice(countries)
-        prows.append({
-            "country_name": c, "project_code": f"PRJ-{np.random.randint(10000,99999)}",
-            "org_name": np.random.choice(orgs),
-            "org_type": np.random.choice(["UN Agency","International NGO","National NGO"]),
-            "cluster": np.random.choice(clusters),
-            "year": np.random.choice(years),
-            "budget": np.random.uniform(50000, 5000000),
-            "project_status": np.random.choice(["Completed","Active","Pipeline"]),
-            "latitude": np.random.uniform(-30, 40),
-            "longitude": np.random.uniform(-20, 80),
-            "gender_marker": np.random.choice(["2a","2b","1","0"]),
-        })
-    projects = pd.DataFrame(prows)
-
-    # Contributions
-    donors = ["USA","GBR","DEU","SWE","NOR","NLD","JPN","CAN","AUS","CHE"]
-    crows = []
-    for country in countries:
-        for year in years:
-            crows.append({
-                "country_name": country,
-                "year": year,
-                "total_pledged_usd": np.random.uniform(1e6, 1e8),
-                "total_paid_usd": np.random.uniform(5e5, 9e7),
-                "num_donors": np.random.randint(2, 15),
-            })
-    contribs = pd.DataFrame(crows)
+    features  = spark.table("humanitarian.features").toPandas()
+    anomalies = spark.table("humanitarian.anomalies").toPandas()
+    projects  = spark.table("humanitarian.projects").toPandas()
+    contribs  = spark.table("humanitarian.contributions").toPandas()
 
     return features, anomalies, projects, contribs
 
