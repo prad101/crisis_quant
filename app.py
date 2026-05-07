@@ -15,7 +15,7 @@ warnings.filterwarnings("ignore")
 
 # ── PAGE CONFIG ───────────────────────────────────────────────────────────────
 st.set_page_config(
-    page_title="Humanitarian Aid Intelligence",
+    page_title="CrisisQuant - Humanitarian Aid Intelligence",
     page_icon="🌍",
     layout="wide",
     initial_sidebar_state="expanded",
