@@ -1,8 +1,10 @@
 # Databricks notebook source
+# MAGIC %md
 # MAGIC ## Notebook 02: PySpark Pipeline & Feature Engineering
 # MAGIC **Purpose**: Join all datasets, engineer features, write to humanitarian.features Delta table.
 
 # COMMAND ----------
+
 from pyspark.sql import SparkSession
 from pyspark.sql.functions import (
     col, when, lit, lower, trim, sum as spark_sum,
@@ -23,6 +25,7 @@ spark.sql("CREATE DATABASE IF NOT EXISTS humanitarian")
 print("✓ Spark ready")
 
 # COMMAND ----------
+
 # ── LOAD RAW DELTA TABLES ─────────────────────────────────────────────────────
 print("="*70)
 print("LOADING RAW DELTA TABLES")
@@ -38,30 +41,65 @@ for t in tables:
         print(f"✗ {t}: {e}")
 
 # COMMAND ----------
+
 # ── STEP 1: PREP FTS REQUIREMENTS ─────────────────────────────────────────────
 print("\n" + "="*70)
 print("STEP 1: PREP FTS REQUIREMENTS (Base Funding Table)")
 print("="*70)
-
+print(dfs["fts_requirements"].columns)
 fts = dfs["fts_requirements"].select(
     col("country_code").cast(StringType()).alias("country_code"),
-    when(col("clusterCode").rlike(r"^\d+$"), col("clusterCode")).otherwise(None).alias("cluster_id"),
-    lower(trim(col("cluster"))).alias("cluster_name"),
-    when(col("year").rlike(r"^\d{4}$"), col("year").cast(IntegerType())).otherwise(None).alias("year"),
-    col("name").alias("appeal_name"),
-    col("id").alias("appeal_id"),
-    when(col("requirements").rlike(r"^-?\d+(\.\d+)?$"),
-         col("requirements").cast(DoubleType())).otherwise(None).alias("total_requirements_usd"),
-    when(col("funding").rlike(r"^-?\d+(\.\d+)?$"),
-         col("funding").cast(DoubleType())).otherwise(None).alias("total_funding_usd"),
-    when(col("percentFunded").rlike(r"^-?\d+(\.\d+)?$"),
-         col("percentFunded").cast(DoubleType())).otherwise(None).alias("funding_pct"),
+    when(col("sector_cluster_code").rlike(r"^\d+$"), col("sector_cluster_code")).otherwise(None).alias("cluster_id"),
+    lower(trim(col("sector_cluster_name"))).alias("cluster_name"),
+    when(col("date_year").rlike(r"^\d{4}$"), col("date_year").cast(IntegerType())).otherwise(None).alias("year"),
+    col("activity_appeal_name").alias("appeal_name"),
+    col("activity_appeal_id_fts_internal").alias("appeal_id"),
+    when(col("value_funding_required_usd").rlike(r"^-?\d+(\.\d+)?$"),
+         col("value_funding_required_usd").cast(DoubleType())).otherwise(None).alias("total_requirements_usd"),
+    when(col("value_funding_total_usd").rlike(r"^-?\d+(\.\d+)?$"),
+         col("value_funding_total_usd").cast(DoubleType())).otherwise(None).alias("total_funding_usd"),
+    when(col("value_funding_pct").rlike(r"^-?\d+(\.\d+)?$"),
+         col("value_funding_pct").cast(DoubleType())).otherwise(None).alias("funding_pct"),
 ).dropna(subset=["country_code", "year"])
 
 fts = fts.fillna({"total_funding_usd": 0.0, "total_requirements_usd": 0.0})
 print(f"✓ FTS prep: {fts.count():,} rows")
 
 # COMMAND ----------
+
+from pyspark.sql.functions import abs as spark_abs, greatest
+
+# After the FTS select + dropna, add these cleaning steps:
+
+# Fix 1: Clamp negative funding to 0 (refunds/corrections in FTS)
+fts = fts.withColumn(
+    "total_funding_usd",
+    when(col("total_funding_usd") < 0, lit(0.0))
+    .otherwise(col("total_funding_usd"))
+)
+print(f"✓ FTS before dedup: {fts.count():,} rows")
+# Fix 2: Deduplicate — aggregate multiple appeals per country+cluster+year
+fts = fts.groupBy("country_code", "cluster_name", "year").agg(
+    spark_sum("total_requirements_usd").alias("total_requirements_usd"),
+    spark_sum("total_funding_usd").alias("total_funding_usd"),
+    avg("funding_pct").alias("funding_pct"),
+    count("appeal_id").alias("num_appeals"),
+)
+
+print(f"✓ FTS after dedup: {fts.count():,} rows")
+
+#****new*****
+# After FTS dedup, before joins — drop rows where requirements = 0 but funding exists
+# These are data quality issues in FTS (funded with no recorded requirement)
+before = fts.count()
+fts = fts.filter(
+    ~((col("total_requirements_usd") == 0) & (col("total_funding_usd") > 0))
+)
+after = fts.count()
+print(f"✓ Dropped {before - after:,} rows with zero requirements but non-zero funding")
+
+# COMMAND ----------
+
 # ── STEP 2: PREP HNO ──────────────────────────────────────────────────────────
 print("\n" + "="*70)
 print("STEP 2: PREP HNO (Needs & Beneficiaries)")
@@ -171,6 +209,7 @@ hno_agg = hno.groupBy("country_code").agg(
 print(f"✓ HNO aggregated: {hno_agg.count():,} country rows")
 
 # COMMAND ----------
+
 # ── STEP 3: PREP POPULATION ───────────────────────────────────────────────────
 print("\n" + "="*70)
 print("STEP 3: PREP POPULATION")
@@ -190,6 +229,7 @@ pop_agg = pop.select(
 print(f"✓ Population aggregated: {pop_agg.count():,} country rows")
 
 # COMMAND ----------
+
 # ── STEP 4: PREP PROJECTS (CBPF Project Level) ────────────────────────────────
 print("\n" + "="*70)
 print("STEP 4: PREP PROJECTS")
@@ -227,6 +267,7 @@ proj_prep = proj.select(
 print(f"✓ Projects prep: {proj_prep.count():,} rows")
 
 # COMMAND ----------
+
 # ── STEP 5: PREP CONTRIBUTIONS (Donor Flows) ──────────────────────────────────
 print("\n" + "="*70)
 print("STEP 5: PREP CONTRIBUTIONS")
@@ -255,6 +296,7 @@ contrib_agg = contrib_prep.groupBy("country_name", "year").agg(
 print(f"✓ Contributions aggregated: {contrib_agg.count():,} rows")
 
 # COMMAND ----------
+
 # ── STEP 6: PREP EMDAT (Disaster Context) ─────────────────────────────────────
 print("\n" + "="*70)
 print("STEP 6: PREP EMDAT DISASTER DATA")
@@ -271,8 +313,8 @@ emdat_prep = emdat.select(
          col("Total_Deaths").cast(DoubleType())).otherwise(None).alias("total_deaths"),
     when(col("Total_Affected").cast(DoubleType()).isNotNull(),
          col("Total_Affected").cast(DoubleType())).otherwise(None).alias("total_affected_disaster"),
-    when(col("Total_Damage_000_US$").cast(DoubleType()).isNotNull(),
-         col("Total_Damage_000_US$").cast(DoubleType())).otherwise(None).alias("total_damage_000usd"),
+    when(col("Total_Damage_000_US").cast(DoubleType()).isNotNull(),
+         col("Total_Damage_000_US").cast(DoubleType())).otherwise(None).alias("total_damage_000usd"),
 ).dropna(subset=["country_code", "year"])
 
 # Aggregate recent disasters (last 5 years relative to data)
@@ -286,6 +328,7 @@ emdat_agg = emdat_prep.filter(col("year") >= 2019).groupBy("country_code").agg(
 print(f"✓ EMDAT aggregated: {emdat_agg.count():,} country rows")
 
 # COMMAND ----------
+
 # ── STEP 7: BUILD FEATURES TABLE ──────────────────────────────────────────────
 print("\n" + "="*70)
 print("STEP 7: BUILDING FEATURES TABLE (FTS base + joins)")
@@ -320,6 +363,7 @@ features_df = features_df.fillna({
 })
 
 # COMMAND ----------
+
 # ── STEP 8: FEATURE ENGINEERING ───────────────────────────────────────────────
 print("\n" + "="*70)
 print("STEP 8: FEATURE ENGINEERING")
@@ -399,12 +443,169 @@ for f in feature_cols:
     print(f"  • {f}")
 
 # COMMAND ----------
+
+# MAGIC %md
+# MAGIC new feature engineering
+
+# COMMAND ----------
+
+# Fix 3: Guard all division by requirements with a null when requirements = 0
+# features_df = features_df \
+#     .withColumn(
+#         "funding_coverage_rate",
+#         when(col("total_requirements_usd") > 0,
+#              col("total_funding_usd") / col("total_requirements_usd")
+#         ).otherwise(lit(None))   # null instead of 1e15
+#     ).withColumn(
+#         "funding_gap_usd",
+#         when(col("total_requirements_usd") > 0,
+#              col("total_requirements_usd") - col("total_funding_usd")
+#         ).otherwise(lit(None))
+#     ).withColumn(
+#         "funding_gap_pct",
+#         when(col("total_requirements_usd") > 0,
+#              (col("total_requirements_usd") - col("total_funding_usd"))
+#              / col("total_requirements_usd") * 100
+#         ).otherwise(lit(None))
+#     ).withColumn(
+#         "need_to_requirements_ratio",
+#         when(col("total_requirements_usd") > 0,
+#              col("total_inneed") / col("total_requirements_usd")
+#         ).otherwise(lit(None))
+#     ).withColumn(
+#         "beneficiary_to_funding_ratio",
+#         when(col("total_funding_usd") > 0,
+#              col("total_targeted") / col("total_funding_usd")
+#         ).otherwise(lit(None))   # null when no funding, not infinity
+#     ).withColumn(
+#         "cost_per_beneficiary",
+#         when(col("total_targeted") > 0,
+#              col("total_funding_usd") / col("total_targeted")
+#         ).otherwise(lit(None))
+#     ).withColumn(
+#         "funding_per_capita",
+#         when(col("total_population") > 0,
+#              col("total_funding_usd") / col("total_population")
+#         ).otherwise(lit(None))
+#     ).withColumn(
+#         "requirement_per_capita",
+#         when(col("total_requirements_usd") > 0,
+#              col("total_requirements_usd") / col("total_population")
+#         ).otherwise(lit(None))
+#     )
+
+# COMMAND ----------
+
+display(features_df.columns)
+
+# COMMAND ----------
+
+# Force recompute with all guards applied — replace any remaining raw divisions
+# features_df = features_df \
+#     .withColumn("funding_coverage_rate",
+#         when(col("total_requirements_usd") > 0,
+#              col("total_funding_usd") / col("total_requirements_usd")
+#         ).otherwise(lit(None))
+#     ).withColumn("beneficiary_to_funding_ratio",
+#         when(col("total_funding_usd") > 0,
+#              col("total_targeted") / col("total_funding_usd")
+#         ).otherwise(lit(None))
+#     ).withColumn("need_to_requirements_ratio",
+#         when(col("total_requirements_usd") > 0,
+#              col("total_inneed") / col("total_requirements_usd")
+#         ).otherwise(lit(None))
+#     ).withColumn("sector_funding_efficiency_pct",
+#         when(col("sector_total_requirements_usd") > 0,
+#              col("sector_total_funding_usd") / col("sector_total_requirements_usd") * 100
+#         ).otherwise(lit(None))
+#     ).withColumn("project_vs_sector_avg",
+#         when(col("sector_total_requirements_usd") > 0,
+#              col("funding_coverage_rate") -
+#              col("sector_total_funding_usd") / col("sector_total_requirements_usd")
+#         ).otherwise(lit(None))
+#     )
+
+
+
+# # Now safe to write
+# features_df.write.format("delta") \
+#     .mode("overwrite") \
+#     .option("overwriteSchema", "true") \
+#     .saveAsTable("humanitarian.features")
+
+# print(f"✓ humanitarian.features: {features_df.count():,} rows × {len(features_df.columns)} cols")
+
+# COMMAND ----------
+
+# Break the lazy execution plan lineage
+features_df.createOrReplaceTempView("features_temp")
+features_df = spark.sql("SELECT * FROM features_temp")
+
+# Now apply guards on clean lineage
+features_df = features_df \
+    .withColumn("funding_coverage_rate",
+        when(col("total_requirements_usd") > 0,
+             col("total_funding_usd") / col("total_requirements_usd")
+        ).otherwise(lit(None))
+    ).withColumn("beneficiary_to_funding_ratio",
+        when(col("total_funding_usd") > 0,
+             col("total_targeted") / col("total_funding_usd")
+        ).otherwise(lit(None))
+    ).withColumn("need_to_requirements_ratio",
+        when(col("total_requirements_usd") > 0,
+             col("total_inneed") / col("total_requirements_usd")
+        ).otherwise(lit(None))
+    ).withColumn("funding_gap_pct",
+        when(col("total_requirements_usd") > 0,
+             (col("total_requirements_usd") - col("total_funding_usd"))
+             / col("total_requirements_usd") * 100
+        ).otherwise(lit(None))
+    ).withColumn("funding_gap_usd",
+        when(col("total_requirements_usd") > 0,
+             col("total_requirements_usd") - col("total_funding_usd")
+        ).otherwise(lit(None))
+    ).withColumn("cost_per_beneficiary",
+        when(col("total_targeted") > 0,
+             col("total_funding_usd") / col("total_targeted")
+        ).otherwise(lit(None))
+    ).withColumn("funding_per_capita",
+        when(col("total_population") > 0,
+             col("total_funding_usd") / col("total_population")
+        ).otherwise(lit(None))
+    ).withColumn("requirement_per_capita",
+        when(col("total_requirements_usd") > 0,
+             col("total_requirements_usd") / col("total_population")
+        ).otherwise(lit(None))
+    ).withColumn("sector_funding_efficiency_pct",
+        when(col("sector_total_requirements_usd") > 0,
+             col("sector_total_funding_usd") / col("sector_total_requirements_usd") * 100
+        ).otherwise(lit(None))
+    ).withColumn("project_vs_sector_avg",
+        when(col("sector_total_requirements_usd") > 0,
+             col("funding_coverage_rate") -
+             col("sector_total_funding_usd") / col("sector_total_requirements_usd")
+        ).otherwise(lit(None))
+    ).drop("_1")
+
+
+# Add this before the write to bypass divide by zero error
+spark.conf.set("spark.sql.ansi.enabled", "false")
+
+features_df.write.format("delta") \
+    .mode("overwrite") \
+    .option("overwriteSchema", "true") \
+    .saveAsTable("humanitarian.features")
+
+print(f"✓ humanitarian.features: {features_df.count():,} rows × {len(features_df.columns)} cols")
+
+# COMMAND ----------
+
 # ── STEP 9: WRITE FEATURES DELTA TABLE ────────────────────────────────────────
 print("\n" + "="*70)
 print("STEP 9: WRITING humanitarian.features")
 print("="*70)
 
-features_df.cache()
+# features_df.cache()
 features_df.write.format("delta") \
     .mode("overwrite") \
     .option("overwriteSchema", "true") \
@@ -412,9 +613,10 @@ features_df.write.format("delta") \
 
 row_count = features_df.count()
 print(f"✓ humanitarian.features: {row_count:,} rows × {len(features_df.columns)} cols")
-features_df.unpersist()
+# features_df.unpersist()
 
 # COMMAND ----------
+
 # ── STEP 10: WRITE PROJECTS DELTA TABLE ───────────────────────────────────────
 print("\n" + "="*70)
 print("STEP 10: WRITING humanitarian.projects")
@@ -427,6 +629,7 @@ proj_prep.write.format("delta") \
 print(f"✓ humanitarian.projects: {proj_prep.count():,} rows")
 
 # COMMAND ----------
+
 # ── STEP 11: WRITE CONTRIBUTIONS DELTA TABLE ──────────────────────────────────
 contrib_agg.write.format("delta") \
     .mode("overwrite") \
@@ -435,6 +638,7 @@ contrib_agg.write.format("delta") \
 print(f"✓ humanitarian.contributions: {contrib_agg.count():,} rows")
 
 # COMMAND ----------
+
 # ── VERIFICATION ──────────────────────────────────────────────────────────────
 print("\n" + "="*70)
 print("VERIFICATION")
@@ -449,3 +653,177 @@ verify.select(
 ).show(10, truncate=False)
 
 print("\n✓ Notebook 02 complete")
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC #FEATURE QUALITY CHECK 
+
+# COMMAND ----------
+
+# COMMAND ----------
+# ── FEATURE QUALITY CHECK ─────────────────────────────────────────────────────
+print("=" * 70)
+print("FEATURE QUALITY CHECK")
+print("=" * 70)
+
+from pyspark.sql.functions import col, count, when, isnull, isnan, avg, stddev
+
+features_verify = spark.table("humanitarian.features")
+total_rows = features_verify.count()
+print(f"\nTotal rows: {total_rows:,}")
+print(f"Total columns: {len(features_verify.columns)}")
+
+# ── 1. NULL / NAN RATES ───────────────────────────────────────────────────────
+print("\n── 1. NULL RATES (key columns) ──────────────────────────────────────")
+key_cols = [
+    "country_code", "cluster_name", "year",
+    "total_requirements_usd", "total_funding_usd",
+    "total_inneed", "total_targeted", "total_population",
+    "funding_gap_usd", "funding_gap_pct", "funding_coverage_rate",
+    "beneficiary_to_funding_ratio", "need_to_requirements_ratio",
+    "targeting_coverage_rate", "cost_per_beneficiary",
+    "funding_per_capita", "requirement_per_capita",
+    "disaster_severity_score", "sector_funding_efficiency_pct",
+    "project_vs_sector_avg",
+]
+
+null_exprs = [
+    count(when(isnull(col(c)), 1)).alias(c)
+    for c in key_cols if c in features_verify.columns
+]
+null_counts = features_verify.select(null_exprs).collect()[0].asDict()
+
+issues = []
+for col_name, null_count in sorted(null_counts.items(), key=lambda x: x[1], reverse=True):
+    null_pct = null_count / total_rows * 100
+    status = "✓" if null_pct < 20 else ("⚠" if null_pct < 60 else "✗")
+    if null_pct > 0:
+        print(f"  {status} {col_name}: {null_count:,} nulls ({null_pct:.1f}%)")
+    if null_pct >= 60:
+        issues.append(f"HIGH NULL RATE: {col_name} ({null_pct:.1f}%)")
+
+# ── 2. RANGE / SANITY CHECKS ──────────────────────────────────────────────────
+print("\n── 2. RANGE CHECKS ──────────────────────────────────────────────────")
+numeric_checks = {
+    "funding_coverage_rate":        (0.0,   10.0),   # should be 0-1, allow slight overflow
+    "funding_gap_pct":              (-10.0, 100.0),  # % gap, allow small negatives
+    "targeting_coverage_rate":      (0.0,   2.0),    # should be 0-1
+    "total_funding_usd":            (0.0,   None),   # non-negative
+    "total_requirements_usd":       (0.0,   None),   # non-negative
+    "total_inneed":                 (0.0,   None),
+    "total_targeted":               (0.0,   None),
+    "cost_per_beneficiary":         (0.0,   None),
+    "disaster_severity_score":      (0.0,   None),
+}
+
+for col_name, (min_expected, max_expected) in numeric_checks.items():
+    if col_name not in features_verify.columns:
+        continue
+    stats = features_verify.select(
+        col(col_name).cast("double")
+    ).agg(
+        {"*": "count"} if False else {col_name: "min"}
+    )
+    row = features_verify.selectExpr(
+        f"min({col_name}) as min_val",
+        f"max({col_name}) as max_val",
+        f"avg({col_name}) as avg_val",
+        f"stddev({col_name}) as std_val",
+        f"sum(case when {col_name} < 0 then 1 else 0 end) as neg_count",
+    ).collect()[0]
+
+    min_val, max_val, avg_val, std_val, neg_count = (
+        row["min_val"], row["max_val"], row["avg_val"],
+        row["std_val"], row["neg_count"]
+    )
+
+    range_ok = True
+    if min_expected is not None and min_val is not None and min_val < min_expected:
+        range_ok = False
+        issues.append(f"OUT OF RANGE: {col_name} min={min_val:.4f} (expected >={min_expected})")
+    if max_expected is not None and max_val is not None and max_val > max_expected:
+        range_ok = False
+        issues.append(f"OUT OF RANGE: {col_name} max={max_val:.4f} (expected <={max_expected})")
+
+    status = "✓" if range_ok else "✗"
+    print(f"  {status} {col_name}:")
+    print(f"      min={min_val:.4f}  max={max_val:.4f}  avg={avg_val:.4f}  std={std_val:.4f}  negatives={neg_count:,}")
+
+# ── 3. ZERO / EMPTY CHECKS ────────────────────────────────────────────────────
+print("\n── 3. ZERO VALUE CHECKS ─────────────────────────────────────────────")
+zero_checks = [
+    "total_requirements_usd",
+    "total_funding_usd",
+    "total_population",
+    "total_inneed",
+]
+for col_name in zero_checks:
+    if col_name not in features_verify.columns:
+        continue
+    zero_count = features_verify.filter(
+        (col(col_name) == 0) | isnull(col(col_name))
+    ).count()
+    zero_pct = zero_count / total_rows * 100
+    status = "✓" if zero_pct < 30 else ("⚠" if zero_pct < 60 else "✗")
+    print(f"  {status} {col_name}: {zero_count:,} zero/null ({zero_pct:.1f}%)")
+
+# ── 4. DUPLICATE KEY CHECK ────────────────────────────────────────────────────
+print("\n── 4. DUPLICATE KEY CHECK (country + cluster + year) ────────────────")
+total_keys = features_verify.count()
+distinct_keys = features_verify.select("country_code", "cluster_name", "year").distinct().count()
+dup_count = total_keys - distinct_keys
+status = "✓" if dup_count == 0 else "⚠"
+print(f"  {status} Total rows: {total_keys:,} | Distinct keys: {distinct_keys:,} | Duplicates: {dup_count:,}")
+if dup_count > 0:
+    issues.append(f"DUPLICATE KEYS: {dup_count:,} duplicate country+cluster+year combinations")
+    features_verify.groupBy("country_code", "cluster_name", "year") \
+        .count().filter(col("count") > 1) \
+        .orderBy(col("count").desc()).show(10, truncate=False)
+
+# ── 5. JOIN COVERAGE CHECK ────────────────────────────────────────────────────
+print("\n── 5. JOIN COVERAGE CHECK ───────────────────────────────────────────")
+join_checks = {
+    "HNO (total_inneed)":            "total_inneed",
+    "Population (total_population)": "total_population",
+    "EMDAT (disaster_severity)":     "disaster_severity_score",
+}
+for label, col_name in join_checks.items():
+    if col_name not in features_verify.columns:
+        continue
+    matched = features_verify.filter(
+        col(col_name).isNotNull() & (col(col_name) > 0)
+    ).count()
+    match_pct = matched / total_rows * 100
+    status = "✓" if match_pct > 30 else ("⚠" if match_pct > 10 else "✗")
+    print(f"  {status} {label}: {matched:,} / {total_rows:,} rows matched ({match_pct:.1f}%)")
+    if match_pct < 10:
+        issues.append(f"LOW JOIN COVERAGE: {label} only {match_pct:.1f}% matched")
+
+# ── 6. SAMPLE ROWS ────────────────────────────────────────────────────────────
+print("\n── 6. SAMPLE ROWS (non-null features) ───────────────────────────────")
+features_verify.filter(
+    col("total_funding_usd") > 0
+).select(
+    "country_code", "cluster_name", "year",
+    "total_requirements_usd", "total_funding_usd",
+    "funding_gap_pct", "funding_coverage_rate",
+    "beneficiary_to_funding_ratio", "disaster_severity_score"
+).show(10, truncate=False)
+
+# ── SUMMARY ───────────────────────────────────────────────────────────────────
+print("\n" + "=" * 70)
+print("QUALITY SUMMARY")
+print("=" * 70)
+if not issues:
+    print("  ✓ All checks passed — features look healthy")
+else:
+    print(f"  ⚠ {len(issues)} issue(s) found:")
+    for issue in issues:
+        print(f"    • {issue}")
+
+print("\n✓ Feature quality check complete")
+
+# COMMAND ----------
+
+

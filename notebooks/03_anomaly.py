@@ -1,8 +1,15 @@
 # Databricks notebook source
+# MAGIC %md
 # MAGIC ## Notebook 03: Anomaly Detection + Benchmarking (MLflow tracked)
 # MAGIC **Purpose**: Run Isolation Forest anomaly detection and K-Means benchmarking on features.
 
 # COMMAND ----------
+
+# MAGIC %pip install mlflow>=3.0 --upgrade
+# MAGIC dbutils.library.restartPython()
+
+# COMMAND ----------
+
 from pyspark.sql import SparkSession
 from pyspark.sql.functions import col, lit, when, pandas_udf
 from pyspark.sql.types import DoubleType, IntegerType, StringType
@@ -23,6 +30,7 @@ spark.sql("CREATE DATABASE IF NOT EXISTS humanitarian")
 print("✓ Ready")
 
 # COMMAND ----------
+
 # ── LOAD FEATURES ─────────────────────────────────────────────────────────────
 print("="*70)
 print("LOADING FEATURES")
@@ -32,6 +40,11 @@ features_df = spark.table("humanitarian.features")
 print(f"✓ Loaded: {features_df.count():,} rows × {len(features_df.columns)} cols")
 
 # COMMAND ----------
+
+display(features_df.columns)
+
+# COMMAND ----------
+
 # ── FEATURE SELECTION FOR ML ──────────────────────────────────────────────────
 ML_FEATURES = [
     "funding_coverage_rate",
@@ -46,14 +59,19 @@ ML_FEATURES = [
 ]
 
 # Filter to rows with valid ML features and convert to pandas
+# df_ml = features_df.select(
+#     ["country_code", "cluster_name", "year", "appeal_name",
+#      "total_requirements_usd", "total_funding_usd"] + ML_FEATURES
+# ).dropna(subset=ML_FEATURES).toPandas()
+
 df_ml = features_df.select(
-    ["country_code", "cluster_name", "year", "appeal_name",
-     "total_requirements_usd", "total_funding_usd"] + ML_FEATURES
+    ["country_code", "cluster_name", "year", "total_requirements_usd", "total_funding_usd"] + ML_FEATURES
 ).dropna(subset=ML_FEATURES).toPandas()
 
 print(f"✓ ML-ready rows (no nulls in features): {len(df_ml):,}")
 
 # COMMAND ----------
+
 # ── ISOLATION FOREST ──────────────────────────────────────────────────────────
 print("\n" + "="*70)
 print("ISOLATION FOREST ANOMALY DETECTION")
@@ -74,10 +92,10 @@ with mlflow.start_run(run_name="isolation_forest_v1"):
     )
     iso.fit(X_scaled)
     predictions  = iso.predict(X_scaled)    # 1 = normal, -1 = anomaly
-    scores       = iso.decision_function(X_scaled)  # higher = more normal
+    scores = iso.decision_function(X_scaled)  # higher = more normal
 
-    df_ml["is_anomaly"]     = (predictions == -1).astype(int)
-    df_ml["anomaly_score"]  = -scores   # flip: higher = more anomalous
+    df_ml["is_anomaly"] = (predictions == -1).astype(int)
+    df_ml["anomaly_score"] = -scores   # flip: higher = more anomalous
 
     anomaly_count = int(df_ml["is_anomaly"].sum())
     anomaly_rate  = float(df_ml["is_anomaly"].mean())
@@ -93,6 +111,7 @@ with mlflow.start_run(run_name="isolation_forest_v1"):
     print(f"✓ Anomalies detected: {anomaly_count:,} ({anomaly_rate*100:.1f}%)")
 
 # COMMAND ----------
+
 # ── K-MEANS BENCHMARKING ──────────────────────────────────────────────────────
 print("\n" + "="*70)
 print("K-MEANS BENCHMARKING (Comparable Project Clusters)")
@@ -127,6 +146,7 @@ with mlflow.start_run(run_name="kmeans_benchmarking_v1"):
     print(f"  Cluster distribution:\n{pd.Series(df_ml['cluster_id']).value_counts().sort_index()}")
 
 # COMMAND ----------
+
 # ── WRITE ANOMALIES DELTA TABLE ───────────────────────────────────────────────
 print("\n" + "="*70)
 print("WRITING humanitarian.anomalies")
@@ -141,6 +161,7 @@ sdf_anomalies.write.format("delta") \
 print(f"✓ humanitarian.anomalies: {sdf_anomalies.count():,} rows")
 
 # COMMAND ----------
+
 # ── TOP ANOMALIES SUMMARY ─────────────────────────────────────────────────────
 print("\n" + "="*70)
 print("TOP 20 ANOMALOUS ALLOCATIONS")
@@ -148,9 +169,25 @@ print("="*70)
 
 top_anomalies = df_ml[df_ml["is_anomaly"] == 1] \
     .sort_values("anomaly_score", ascending=False) \
-    .head(20)[["country_code", "cluster_name", "year", "appeal_name",
+    .head(20)[["country_code", "cluster_name", "year",
                "total_requirements_usd", "total_funding_usd",
                "funding_gap_pct", "anomaly_score", "cluster_id"]]
 
+# top_anomalies = df_ml[df_ml["is_anomaly"] == 1] \
+#     .sort_values("anomaly_score", ascending=False) \
+#     .head(20)[["country_code", "cluster_name", "year", "appeal_name",
+#                "total_requirements_usd", "total_funding_usd",
+#                "funding_gap_pct", "anomaly_score", "cluster_id"]]
+
 print(top_anomalies.to_string(index=False))
 print("\n✓ Notebook 03 complete")
+
+# COMMAND ----------
+
+spark.sql("CREATE CATALOG IF NOT EXISTS humanitarian")
+spark.sql("CREATE SCHEMA IF NOT EXISTS humanitarian.data")
+spark.sql("CREATE VOLUME IF NOT EXISTS humanitarian.data.files")
+
+# COMMAND ----------
+
+
